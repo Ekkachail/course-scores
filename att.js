@@ -92,13 +92,22 @@ function tabAttendance(m) {
   attList(m);
 }
 
+// การตั้งค่าเช็คชื่อของรายวิชา (เก็บในตาราง courses — ต้องรัน 08_attendance_settings.sql)
+function attCfgOf(c, d) {
+  const cat = d.cats.find((k) => /เข้า|attend/i.test(k.name));
+  const auto = (cat && (d.itemsByCat.get(cat.id) || [])[0]) || d.items.find((i) => /เข้า|attend/i.test(i.title));
+  const itemId = c?.att_item_id && d.itemById.get(c.att_item_id) ? c.att_item_id : auto?.id ?? null;
+  return {
+    itemId,
+    lateW: c?.att_late_weight != null ? Number(c.att_late_weight) : 0.5,
+    warn: c?.att_warn_absent != null ? Number(c.att_warn_absent) : 5,
+    saved: c ? 'att_late_weight' in c : false,
+  };
+}
 function defaultAttCfg(d) {
   const cfg = S.attCfg?.[S.courseId];
   if (cfg && d.itemById.get(cfg.itemId)) return cfg;
-  const cat = d.cats.find((c) => /เข้า|attend/i.test(c.name));
-  const it = (cat && (d.itemsByCat.get(cat.id) || [])[0]) || d.items.find((i) => /เข้า|attend/i.test(i.title));
-  const allowed = Number((cat?.note || '').match(/ไม่เกิน\s*(\d+)/)?.[1] ?? 2);
-  return { itemId: it?.id ?? null, allowed, lateW: 0.5 };
+  return attCfgOf(course(), d);
 }
 
 function attScore(d, rowId, cfg) {
@@ -106,9 +115,9 @@ function attScore(d, rowId, cfg) {
   if (!it) return null;
   const c = attCounts(d, rowId);
   if (!c.total) return null;
-  const attended = c.present + c.late * cfg.lateW + c.excused;
-  const need = Math.max(1, c.total - cfg.allowed);
-  return r2(Number(it.max_score) * Math.min(1, attended / need));
+  // มา/ลา = 1 คาบ · สาย = lateW คาบ · ขาด = 0 (เกณฑ์ขาดใช้แจ้งเตือนเท่านั้น ไม่เกี่ยวกับคะแนน)
+  const attended = c.present + c.excused + c.late * cfg.lateW;
+  return r2((Number(it.max_score) * attended) / c.total);
 }
 
 function attList(m) {
@@ -118,6 +127,9 @@ function attList(m) {
   const cfg = defaultAttCfg(d);
   S.attCfg = { ...(S.attCfg || {}), [S.courseId]: cfg };
   const closed = d.attSessions.filter((s) => !sessOpen(s));
+  const counted = d.students.map((st) => ({ st, c: attCounts(d, st.id) }));
+  const warnList = cfg.warn > 0 ? counted.filter((x) => x.c.absent >= cfg.warn) : [];
+  const nearList = cfg.warn > 1 ? counted.filter((x) => x.c.absent === cfg.warn - 1) : [];
   const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
 
   const sessRow = (s) => {
@@ -150,12 +162,16 @@ function attList(m) {
         <label class="inl">ใส่คะแนนลงรายการ
           <select id="attItem">${d.cats.map((c) => `<optgroup label="${esc(c.name)}">${(d.itemsByCat.get(c.id) || []).map((it) =>
             `<option value="${it.id}" ${it.id === cfg.itemId ? 'selected' : ''}>${esc(it.title)} (/${num(it.max_score)})</option>`).join('')}</optgroup>`).join('')}</select></label>
-        <label class="inl">ขาดได้ <input id="attAllowed" class="tiny" value="${cfg.allowed}" inputmode="numeric"> ครั้ง</label>
-        <label class="inl">สาย นับเป็น <input id="attLateW" class="tiny" value="${cfg.lateW}" inputmode="decimal"> ครั้ง</label>
+        <label class="inl">สาย 1 ครั้ง ได้ <input id="attLateW" class="tiny" value="${cfg.lateW}" inputmode="decimal"> คาบ</label>
+        <label class="inl">แจ้งเตือนเมื่อขาดครบ <input id="attWarn" class="tiny" value="${cfg.warn}" inputmode="numeric"> ครั้ง</label>
         <button class="btn primary" id="attSave">บันทึกลงคะแนน</button>
       </div>
-      <p class="hint">สูตร: คะแนน = คะแนนเต็ม × min(1, (มา + สาย×${cfg.lateW} + ลา) ÷ (จำนวนคาบที่ปิดแล้ว ${closed.length} − ขาดได้ ${cfg.allowed}))
-        → ขาดไม่เกิน ${cfg.allowed} ครั้ง ได้เต็ม</p>
+      <p class="hint">สูตร: คะแนน = คะแนนเต็ม × (มา + ลา + สาย×${cfg.lateW}) ÷ จำนวนคาบที่ปิดแล้ว (${closed.length} คาบ)
+        → ขาด 1 คาบ เสีย 1 คาบ · สาย 1 คาบ เสีย ${r2(1 - cfg.lateW)} คาบ ·
+        เกณฑ์ขาด ${cfg.warn} ครั้งใช้<b>แจ้งเตือนเท่านั้น</b> ไม่มีผลกับคะแนน</p>
+      ${warnList.length ? `<div class="m-alert bad">⚠ ขาดครบ ${cfg.warn} ครั้งแล้ว ${warnList.length} คน: ${warnList.map((x) => esc(x.st.nickname || x.st.full_name) + ` (${x.c.absent})`).join(', ')}</div>` : ''}
+      ${nearList.length ? `<div class="m-alert">ใกล้ถึงเกณฑ์ (ขาด ${cfg.warn - 1} ครั้ง) ${nearList.length} คน: ${nearList.map((x) => esc(x.st.nickname || x.st.full_name)).join(', ')}</div>` : ''}
+      ${cfg.saved ? '' : '<p class="hint warnt">การตั้งค่านี้ยังไม่ถูกบันทึกกับรายวิชา — รัน 08_attendance_settings.sql แล้วนิสิตจะเห็นคำเตือนการขาดด้วย</p>'}
       <div class="tablewrap attwrap"><table class="mini attm">
         <thead><tr><th>รหัส</th><th>ชื่อ</th>${d.attSessions.map((s) => `<th class="ctr" title="${esc(s.title)}">${shortDate(s.opens_at)}</th>`).join('')}
           <th class="n">มา</th><th class="n">สาย</th><th class="n">ลา</th><th class="n">ขาด</th><th class="n">คะแนนใหม่</th><th class="n">ในระบบ</th></tr></thead>
@@ -166,7 +182,7 @@ function attList(m) {
           return `<tr><td>${esc(st.student_id)}</td><td class="nowrap">${esc(st.full_name)}${st.nickname ? ` <span class="nick">(${esc(st.nickname)})</span>` : ''}</td>
             ${d.attSessions.map((s) => { const k = attStatus(d, s, st.id); const a = d.att.get(key(s.id, st.id));
               return `<td class="ctr att-${k}">${ATT_SYM[k]}${a?.flagged ? '<sup>⚑</sup>' : ''}</td>`; }).join('')}
-            <td class="n">${c.present}</td><td class="n">${c.late}</td><td class="n">${c.excused}</td><td class="n ${c.absent > cfg.allowed ? 'warnt' : ''}">${c.absent}</td>
+            <td class="n">${c.present}</td><td class="n">${c.late}</td><td class="n">${c.excused}</td><td class="n ${cfg.warn > 0 && c.absent >= cfg.warn ? 'absbad' : cfg.warn > 1 && c.absent === cfg.warn - 1 ? 'warnt' : ''}">${c.absent}${cfg.warn > 0 && c.absent >= cfg.warn ? ' ⚠' : ''}</td>
             <td class="n"><b>${sc ?? '–'}</b></td><td class="n muted">${cur ?? '–'}</td></tr>`;
         }).join('')}</tbody>
       </table></div>
@@ -197,16 +213,25 @@ function attList(m) {
   m.querySelectorAll('[data-delsess]').forEach((b) => (b.onclick = () => attDeleteSession(d.attSessions.find((s) => s.id === Number(b.dataset.delsess)))));
 
   if (d.attSessions.length) {
-    const upd = () => {
-      S.attCfg[S.courseId] = {
+    const upd = async () => {
+      const lw = Number(m.querySelector('#attLateW').value.replace(',', '.'));
+      const next = {
         itemId: Number(m.querySelector('#attItem').value),
-        allowed: Math.max(0, parseInt(m.querySelector('#attAllowed').value, 10) || 0),
-        lateW: Math.min(1, Math.max(0, Number(m.querySelector('#attLateW').value.replace(',', '.')) || 0)),
+        lateW: Number.isFinite(lw) ? Math.min(1, Math.max(0, lw)) : 0.5,
+        warn: Math.max(0, parseInt(m.querySelector('#attWarn').value, 10) || 0),
+        saved: cfg.saved,
       };
+      S.attCfg[S.courseId] = next;
+      if (cfg.saved) {
+        const patch = { att_item_id: next.itemId || null, att_late_weight: next.lateW, att_warn_absent: next.warn };
+        const { error } = await sb.from('courses').update(patch).eq('id', S.courseId);
+        if (error) fail(error, 'บันทึกการตั้งค่าไม่สำเร็จ');
+        else Object.assign(course(), patch);
+      }
       attList(m);
     };
     m.querySelector('#attItem').onchange = upd;
-    m.querySelector('#attAllowed').onchange = upd;
+    m.querySelector('#attWarn').onchange = upd;
     m.querySelector('#attLateW').onchange = upd;
     m.querySelector('#attSave').onclick = async () => {
       const c = S.attCfg[S.courseId];
@@ -504,13 +529,19 @@ async function checkInScreen(code) {
 }
 
 // ประวัติการเข้าเรียนในหน้านิสิต
-function renderAttStudent(box, { row, d }) {
+function renderAttStudent(box, { row, d, course: c0 }) {
   if (!box || !d.attReady || !d.attSessions?.length) { if (box) box.innerHTML = ''; return; }
   const c = attCounts(d, row.id);
+  const warn = c0?.att_warn_absent != null ? Number(c0.att_warn_absent) : 0; // 0 = ไม่แจ้งเตือน
+  const alert = warn > 0 && c.absent >= warn
+    ? `<div class="m-alert bad">⚠ ขาดเรียนแล้ว <b>${c.absent}</b> ครั้ง ครบเกณฑ์แจ้งเตือน ${warn} ครั้ง — กรุณาติดต่ออาจารย์ผู้สอน</div>`
+    : warn > 1 && c.absent === warn - 1
+      ? `<div class="m-alert">ขาดเรียนแล้ว ${c.absent} ครั้ง — อีก 1 ครั้งจะครบเกณฑ์แจ้งเตือน (${warn} ครั้ง)</div>` : '';
   const list = [...d.attSessions].reverse();
   box.innerHTML = `<section class="card">
     <div class="card-head"><h2>การเข้าเรียน</h2>
       <p class="muted">มา <b>${c.present}</b> · สาย <b>${c.late}</b> · ลา <b>${c.excused}</b> · ขาด <b class="${c.absent ? 'warnt' : ''}">${c.absent}</b> จาก ${c.total} คาบ</p></div>
+    ${alert}
     <div class="attchips">${list.map((s) => {
       const k = attStatus(d, s, row.id);
       const a = d.att.get(key(s.id, row.id));

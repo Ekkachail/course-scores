@@ -486,3 +486,4 @@ tr.flagrow td { background: var(--err-bg); }
   #qr, .qrbar { width: 100%; }
 }
 .center-sm { text-align: center; margin: .6rem 0 0; }
+.absbad { color: var(--err); font-weight: 700; background: var(--err-bg); }

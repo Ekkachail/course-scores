@@ -1796,7 +1796,7 @@ function renderStudentView(root, { course: c, row, d, persist = true, onChanged 
 
   update();
   renderHwStudent(root.querySelector('#sv-hw'), { row, d, preview: !persist, onChanged });
-  renderAttStudent(root.querySelector('#sv-att'), { row, d });
+  renderAttStudent(root.querySelector('#sv-att'), { row, d, course: c });
 }
 
 async function loadStudentCourse(row) {
